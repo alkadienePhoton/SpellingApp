@@ -1,0 +1,565 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>🧠 Spelling Quiz Blind Mode</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet" />
+  <style>
+    body.bg-light {
+      padding-top: 1rem;
+      padding-bottom: 1rem;
+      background-color: #f8f9fa;
+    }
+    #quizTableContainer {
+      max-height: 60vh;
+      overflow-y: auto;
+      border: 1px solid #ddd;
+      border-radius: 0.25rem;
+      background: white;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+    }
+    th, td {
+      vertical-align: middle;
+      border: 1px solid #dee2e6;
+      padding: 0.5rem 0.75rem;
+      text-align: center;
+    }
+    input.word-input {
+      width: 100%;
+      padding: 0.375rem 0.75rem;
+      font-size: 1rem;
+      border-radius: 0.25rem;
+      border: 1px solid #ced4da;
+    }
+    button.pronounce-btn {
+      font-size: 1.25rem;
+    }
+    .alert {
+      position: fixed;
+      left: 50%;
+      transform: translateX(-50%);
+      max-width: 600px;
+      z-index: 1050;
+      width: 90%;
+      text-align: center;
+    }
+    #correctAnswerAlert {
+      top: 70px;
+    }
+    #correctAlert {
+      top: 120px;
+    }
+  </style>
+</head>
+<body class="bg-light">
+
+  <div class="container py-3">
+    <h2 class="text-center mb-4">🧠 Spelling Quiz - Blind Mode</h2>
+
+    <div class="d-flex flex-wrap justify-content-center gap-2 mb-3">
+      <button class="btn btn-outline-primary" onclick="setMode('alphabetized')">Alphabetized</button>
+      <button class="btn btn-outline-secondary" onclick="setMode('randomized')">Randomized</button>
+      <button class="btn btn-outline-info" onclick="setMode('letter')">Shuffle by Letter</button>
+      <button class="btn btn-outline-dark" onclick="jumpToWord()">🔍 Jump to Word</button>
+      <button class="btn btn-outline-warning" onclick="jumpToLetter()">🔤 Jump to Letter</button>
+      <button class="btn btn-outline-success" onclick="exportCSV()">📄 Export CSV</button>
+      <button class="btn btn-outline-danger" onclick="exportIncorrectCSV()">📄 Export Incorrect</button>
+      <button class="btn btn-outline-secondary" onclick="resetProgress()">♻️ Reset Progress</button>
+    </div>
+
+    <div id="quizTableContainer"></div>
+  </div>
+
+  <div id="correctAnswerAlert" class="alert alert-danger d-none" role="alert"></div>
+  <div id="correctAlert" class="alert alert-success d-none" role="alert"></div>
+
+<script>
+  let wordList = [];
+  let corrects = [];
+  let currentSpot = 0;
+  let randomizedList = [];
+  let mode = "alphabetized";
+
+  // Use the exact same keys as the main quiz (no prefix)
+  // localStorage keys:
+  //   "corrects", "currentSpot", "randomizedList", "mode"
+
+  // Cache objects for definitions and origins
+  const defCache = {};
+  const originCache = {};
+
+  // Merriam-Webster API key & base URL
+  const MW_API_KEY = "e457edc6-600b485d-a4e7-414c49fa22dc";
+  const MW_BASE_URL = "https://www.dictionaryapi.com/api/v3/references/collegiate/json/";
+
+  // Free Dictionary API base url fallback
+  const FREE_DICT_BASE_URL = "https://api.dictionaryapi.dev/api/v2/entries/en/";
+
+  // Fetch definition with fallback
+  async function fetchDefinition(word) {
+    if (defCache[word]) return defCache[word];
+    try {
+      const res = await fetch(`${MW_BASE_URL}${word}?key=${MW_API_KEY}`);
+      const data = await res.json();
+      if (Array.isArray(data) && data.length > 0 && data[0].shortdef) {
+        let defs = [];
+        for (const entry of data) {
+          if (!entry.shortdef) continue;
+          defs.push(...entry.shortdef);
+        }
+        let defText = defs.join(" ").trim();
+        if (!defText) defText = "Definition not found";
+        const regex = new RegExp(word, "gi");
+        defText = defText.replace(regex, "[word]");
+        defCache[word] = defText;
+        return defText;
+      } else if (Array.isArray(data) && data.length > 0 && typeof data[0] === "string") {
+        defCache[word] = `Definition not found. <a href="https://www.merriam-webster.com/dictionary/${encodeURIComponent(word)}" target="_blank" rel="noopener noreferrer">View the word on Merriam-Webster</a>`;
+        return defCache[word];
+      } else {
+        return await fetchDefinitionFreeDict(word);
+      }
+    } catch (e) {
+      return await fetchDefinitionFreeDict(word);
+    }
+  }
+
+  async function fetchDefinitionFreeDict(word) {
+    if (defCache[word]) return defCache[word];
+    try {
+      const res = await fetch(`${FREE_DICT_BASE_URL}${word}`);
+      if (!res.ok) throw new Error("Free Dictionary API error");
+      const data = await res.json();
+      if (Array.isArray(data) && data.length > 0) {
+        const meanings = data[0].meanings || [];
+        let defs = [];
+        for (const meaning of meanings) {
+          if (!meaning.definitions) continue;
+          for (const defObj of meaning.definitions) {
+            if (defObj.definition) defs.push(defObj.definition);
+          }
+        }
+        let defText = defs.join(" ").trim();
+        if (!defText) defText = "Definition not found";
+        defCache[word] = defText;
+        return defText;
+      } else {
+        defCache[word] = `Definition not found. <a href="https://www.merriam-webster.com/dictionary/${encodeURIComponent(word)}" target="_blank" rel="noopener noreferrer">View the word on Merriam-Webster</a>`;
+        return defCache[word];
+      }
+    } catch {
+      defCache[word] = `Definition not found. <a href="https://www.merriam-webster.com/dictionary/${encodeURIComponent(word)}" target="_blank" rel="noopener noreferrer">View the word on Merriam-Webster</a>`;
+      return defCache[word];
+    }
+  }
+
+  // Fetch origin with fallback
+  async function fetchOrigin(word) {
+    if (originCache[word]) return originCache[word];
+    try {
+      const res = await fetch(`https://www.dictionaryapi.com/api/v3/references/collegiate/origins/json/${word}?key=${MW_API_KEY}`);
+      const data = await res.json();
+      if (Array.isArray(data) && data.length > 0 && data[0].et) {
+        const entry = data[0];
+        let originTexts = entry.et
+          .map(e => (Array.isArray(e) && e.length > 1 ? e[1] : ""))
+          .filter(Boolean);
+        const originText = originTexts.join(" ").replace(/\{[^}]+\}/g, "").trim();
+        originCache[word] = originText || "Origin not found";
+        return originCache[word];
+      } else {
+        return await fetchOriginFreeDict(word);
+      }
+    } catch (e) {
+      return await fetchOriginFreeDict(word);
+    }
+  }
+
+  async function fetchOriginFreeDict(word) {
+    if (originCache[word]) return originCache[word];
+    try {
+      const res = await fetch(`${FREE_DICT_BASE_URL}${word}`);
+      if (!res.ok) throw new Error("Free Dictionary API error");
+      const data = await res.json();
+      if (Array.isArray(data) && data.length > 0 && data[0].origin) {
+        originCache[word] = data[0].origin || "Origin not found";
+        return originCache[word];
+      } else {
+        originCache[word] = "Origin not found";
+        return originCache[word];
+      }
+    } catch {
+      originCache[word] = "Origin not found";
+      return originCache[word];
+    }
+  }
+
+  // Save/load state using keys without prefix to match main quiz
+  function saveState() {
+  localStorage.setItem("blind_corrects", JSON.stringify(corrects));
+  localStorage.setItem("blind_currentSpot", currentSpot);
+  localStorage.setItem("blind_randomizedList", JSON.stringify(randomizedList));
+  localStorage.setItem("blind_mode", mode);
+}
+
+function loadState() {
+  corrects = JSON.parse(localStorage.getItem("blind_corrects") || "[]");
+  currentSpot = parseInt(localStorage.getItem("blind_currentSpot")) || 0;
+  randomizedList = JSON.parse(localStorage.getItem("blind_randomizedList") || "[]");
+  mode = localStorage.getItem("blind_mode") || "alphabetized";
+}
+
+
+  // Set mode and generate randomizedList if needed
+  function setMode(newMode) {
+    mode = newMode;
+
+    // Only reset randomizedList if switching to randomized or letter
+    if (mode === "randomized") {
+      randomizedList = [...wordList].sort(() => Math.random() - 0.5);
+    } else if (mode === "letter") {
+      randomizedList = shuffleByFirstLetter([...wordList].sort((a,b) => a.localeCompare(b, undefined, {sensitivity: 'base'})));
+    } else {
+      randomizedList = [];
+    }
+
+    // Keep currentSpot and corrects as-is to keep progress synced with main quiz
+    saveState();
+    renderTable();
+  }
+
+  function shuffleByFirstLetter(sortedWords) {
+    const groups = {};
+    sortedWords.forEach(word => {
+      const letter = word[0].toLowerCase();
+      if (!groups[letter]) groups[letter] = [];
+      groups[letter].push(word);
+    });
+    const shuffledGroups = Object.keys(groups).sort().map(letter => {
+      return groups[letter].sort(() => Math.random() - 0.5);
+    });
+    return shuffledGroups.flat();
+  }
+
+  async function renderTable() {
+    const list = mode === "alphabetized"
+      ? [...wordList].sort((a,b) => a.localeCompare(b, undefined, {sensitivity: 'base'}))
+      : randomizedList.length ? randomizedList : wordList;
+
+    if (currentSpot >= list.length) currentSpot = 0;
+    saveState();
+
+    const container = document.getElementById("quizTableContainer");
+    container.innerHTML = "";
+
+    const table = document.createElement("table");
+    const thead = document.createElement("thead");
+    const headerRow = document.createElement("tr");
+    ["Pronounce", "Definition", "Origin", "Type the word"].forEach(text => {
+      const th = document.createElement("th");
+      th.textContent = text;
+      headerRow.appendChild(th);
+    });
+    thead.appendChild(headerRow);
+    table.appendChild(thead);
+
+    const tbody = document.createElement("tbody");
+    table.appendChild(tbody);
+
+    if (list.length === 0) {
+      const noWordsRow = document.createElement("tr");
+      const noWordsCell = document.createElement("td");
+      noWordsCell.colSpan = 4;
+      noWordsCell.textContent = "No words loaded.";
+      noWordsRow.appendChild(noWordsCell);
+      tbody.appendChild(noWordsRow);
+      container.appendChild(table);
+      return;
+    }
+
+    const word = list[currentSpot];
+
+    const row = document.createElement("tr");
+
+    // Pronounce button cell
+    const pronounceCell = document.createElement("td");
+    const pronounceBtn = document.createElement("button");
+    pronounceBtn.className = "btn btn-outline-primary pronounce-btn";
+    pronounceBtn.textContent = "🔈";
+    pronounceBtn.onclick = () => {
+      playCachedOrGoogleTTS(word);
+    };
+    pronounceCell.appendChild(pronounceBtn);
+    row.appendChild(pronounceCell);
+
+    // Definition cell (async)
+    const defCell = document.createElement("td");
+    defCell.innerHTML = "Loading definition...";
+    row.appendChild(defCell);
+    fetchDefinition(word).then(def => {
+      if (def.startsWith("Definition not found") || def.startsWith("Error fetching")) {
+        const textOnly = def.replace(/<a[^>]*>([^<]+)<\/a>/gi, "$1");
+        defCell.textContent = textOnly;
+      } else {
+        defCell.innerHTML = def;
+      }
+    });
+
+    // Origin cell (async)
+    const originCell = document.createElement("td");
+    originCell.textContent = "Loading origin...";
+    row.appendChild(originCell);
+    fetchOrigin(word).then(origin => originCell.textContent = origin);
+
+    // Input cell
+    const inputCell = document.createElement("td");
+    const input = document.createElement("input");
+    input.type = "text";
+    input.className = "word-input";
+    input.setAttribute("aria-label", "Type the spelling of the word");
+    input.autocomplete = "off";
+    inputCell.appendChild(input);
+    row.appendChild(inputCell);
+
+    tbody.appendChild(row);
+    container.appendChild(table);
+
+    playCachedOrGoogleTTS(word);
+    input.focus();
+
+    input.addEventListener("keydown", async (e) => {
+      if (e.key === "Enter") {
+        const val = input.value.trim();
+        if (val.toLowerCase() === word.toLowerCase()) {
+          mark(currentSpot, "correct");
+          showCorrectAlert();
+        } else {
+          mark(currentSpot, "incorrect");
+          showCorrectAnswer(word);
+        }
+        currentSpot++;
+        if (currentSpot >= list.length) currentSpot = 0;
+        input.value = "";
+        saveState();
+        await renderTable();
+      }
+    });
+  }
+
+  function mark(index, status) {
+    corrects[index] = status;
+    saveState();
+  }
+
+  function showCorrectAnswer(word) {
+    const alert = document.getElementById("correctAnswerAlert");
+    alert.textContent = `Incorrect! Correct spelling is: "${word}"`;
+    alert.classList.remove("d-none");
+    setTimeout(() => alert.classList.add("d-none"), 4000);
+  }
+
+  function showCorrectAlert() {
+    const alert = document.getElementById("correctAlert");
+    alert.textContent = "Correct!";
+    alert.classList.remove("d-none");
+    setTimeout(() => alert.classList.add("d-none"), 2000);
+  }
+
+  function jumpToWord() {
+    const wordToJump = prompt("Enter the word to jump to:");
+    if (!wordToJump) return;
+    const list = mode === "alphabetized"
+      ? [...wordList].sort((a,b) => a.localeCompare(b, undefined, {sensitivity: 'base'}))
+      : randomizedList.length ? randomizedList : wordList;
+
+    const index = list.findIndex(w => w.toLowerCase() === wordToJump.toLowerCase());
+    if (index >= 0) {
+      currentSpot = index;
+      saveState();
+      renderTable();
+    } else {
+      alert(`Word "${wordToJump}" not found in the current list.`);
+    }
+  }
+
+  function jumpToLetter() {
+    if (mode !== "letter") {
+      alert("Jumping to a letter only works in 'Shuffle by Letter' mode.");
+      return;
+    }
+    const letter = prompt("Enter a letter to jump to:")?.trim().toLowerCase();
+    if (!letter || letter.length !== 1 || !/[a-z]/.test(letter)) {
+      alert("Please enter a single valid letter.");
+      return;
+    }
+    const list = mode === "alphabetized"
+      ? [...wordList].sort((a,b) => a.localeCompare(b, undefined, {sensitivity: 'base'}))
+      : randomizedList.length ? randomizedList : wordList;
+
+    const displayIndex = list.findIndex(w => w[0].toLowerCase() === letter);
+    if (displayIndex >= 0) {
+      currentSpot = displayIndex;
+      saveState();
+      renderTable();
+    } else {
+      alert(`No words starting with "${letter.toUpperCase()}" found.`);
+    }
+  }
+
+  function exportCSV() {
+    const list = mode === "alphabetized"
+      ? [...wordList].sort((a,b) => a.localeCompare(b, undefined, {sensitivity: 'base'}))
+      : randomizedList.length ? randomizedList : wordList;
+
+    let csvContent = "data:text/csv;charset=utf-8,";
+    csvContent += "Word,Correct,Definition,Origin\n";
+
+    Promise.all(list.map(async (word, idx) => {
+      const def = await fetchDefinition(word);
+      const origin = await fetchOrigin(word);
+      const defText = def.replace(/<[^>]+>/g, "").replace(/"/g, '""');
+      const originText = origin.replace(/"/g, '""');
+      return `"${word}","${corrects[idx] || ""}","${defText}","${originText}"`;
+    })).then(rows => {
+      csvContent += rows.join("\n");
+      const encodedUri = encodeURI(csvContent);
+      const link = document.createElement("a");
+      link.setAttribute("href", encodedUri);
+      link.setAttribute("download", "spelling_quiz.csv");
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+    });
+  }
+
+  function exportIncorrectCSV() {
+    const list = mode === "alphabetized"
+      ? [...wordList].sort((a,b) => a.localeCompare(b, undefined, {sensitivity: 'base'}))
+      : randomizedList.length ? randomizedList : wordList;
+
+    let csvContent = "data:text/csv;charset=utf-8,";
+    csvContent += "Word,Correct,Definition,Origin\n";
+
+    Promise.all(list.map(async (word, idx) => {
+      if (corrects[idx] === "incorrect") {
+        const def = await fetchDefinition(word);
+        const origin = await fetchOrigin(word);
+        const defText = def.replace(/<[^>]+>/g, "").replace(/"/g, '""');
+        const originText = origin.replace(/"/g, '""');
+        return `"${word}","${corrects[idx]}","${defText}","${originText}"`;
+      } else {
+        return null;
+      }
+    })).then(rows => {
+      const filteredRows = rows.filter(r => r !== null);
+      if (filteredRows.length === 0) {
+        alert("No incorrect words to export.");
+        return;
+      }
+      csvContent += filteredRows.join("\n");
+      const encodedUri = encodeURI(csvContent);
+      const link = document.createElement("a");
+      link.setAttribute("href", encodedUri);
+      link.setAttribute("download", "spelling_quiz_incorrect.csv");
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+    });
+  }
+
+  function resetProgress() {
+    if (confirm("Are you sure you want to reset your progress? This cannot be undone.")) {
+      localStorage.removeItem("corrects");
+      localStorage.removeItem("currentSpot");
+      localStorage.removeItem("randomizedList");
+      localStorage.removeItem("mode");
+      corrects = [];
+      currentSpot = 0;
+      randomizedList = [];
+      mode = "alphabetized";
+      saveState();
+      renderTable();
+    }
+  }
+
+  // Audio pronunciation player
+  let currentAudio = null;
+
+  function playCachedOrGoogleTTS(word) {
+    if (currentAudio) {
+      currentAudio.pause();
+      currentAudio = null;
+    }
+
+    const lowerWord = word.toLowerCase();
+    const localAudioPath = `audio/${lowerWord}.mp3`;
+
+    currentAudio = new Audio(localAudioPath);
+    let fallbackUsed = false;
+
+    currentAudio.addEventListener('canplaythrough', () => {
+      currentAudio.play().catch(() => {
+        if (!fallbackUsed) {
+          fallbackUsed = true;
+          playGoogleTranslateTTS(word);
+        }
+      });
+    });
+
+    currentAudio.addEventListener('error', () => {
+      if (!fallbackUsed) {
+        fallbackUsed = true;
+        playGoogleTranslateTTS(word);
+      }
+    });
+
+    currentAudio.load();
+  }
+
+  function playGoogleTranslateTTS(word) {
+    if (currentAudio) {
+      currentAudio.pause();
+      currentAudio = null;
+    }
+    const encodedWord = encodeURIComponent(word);
+    const ttsUrl = `https://translate.google.com/translate_tts?ie=UTF-8&q=${encodedWord}&tl=en&client=tw-ob`;
+
+    currentAudio = new Audio(ttsUrl);
+    currentAudio.play().catch(() => {
+      // silent catch
+    });
+  }
+
+  // Load words from JSON file
+  async function loadWords() {
+    try {
+      const res = await fetch("wordList.json");
+      if (!res.ok) throw new Error("Failed to load wordList.json");
+      wordList = await res.json();
+
+      loadState();
+
+      // Ensure randomizedList matches mode
+      if (mode === "randomized" && randomizedList.length === 0) {
+        randomizedList = [...wordList].sort(() => Math.random() - 0.5);
+      } else if (mode === "letter" && randomizedList.length === 0) {
+        randomizedList = shuffleByFirstLetter([...wordList].sort((a,b) => a.localeCompare(b, undefined, {sensitivity: 'base'})));
+      }
+
+      renderTable();
+    } catch(e) {
+      alert("Error loading words: " + e.message);
+    }
+  }
+
+  // Initial load
+  loadWords();
+
+</script>
+
+</body>
+</html>

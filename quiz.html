@@ -1,0 +1,621 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Spelling Quiz</title>
+    <link
+      href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css"
+      rel="stylesheet"
+    />
+    <style>
+      .current-row {
+        background-color: white !important;
+      }
+      .done-row {
+        background-color: #0d6efd !important;
+        color: white;
+      }
+      .unfinished-row {
+        background-color: #e7f1ff !important;
+      }
+
+      td.word-cell {
+        cursor: pointer;
+      }
+      td.word-cell:hover {
+        text-decoration: underline dotted;
+        background-color: #eef3f8;
+      }
+      .timer-running .word-cell {
+        color: transparent !important;
+        user-select: none;
+      }
+    </style>
+  </head>
+  <body class="bg-light">
+    <div class="container py-4">
+      <h2 class="text-center mb-4">🧠 Spelling Quiz</h2>
+
+      <div class="d-flex flex-wrap justify-content-center gap-2 mb-3">
+        <button
+          class="btn btn-outline-primary"
+          onclick="setMode('alphabetized')"
+        >
+          Alphabetized
+        </button>
+        <button
+          class="btn btn-outline-secondary"
+          onclick="setMode('randomized')"
+        >
+          Randomized
+        </button>
+        <button class="btn btn-outline-info" onclick="setMode('letter')">
+          Shuffle by Letter
+        </button>
+        <button class="btn btn-outline-dark" onclick="jumpToWord()">
+          🔍 Jump to Word
+        </button>
+        <button class="btn btn-outline-warning" onclick="jumpToLetter()">
+          🔤 Jump to Letter
+        </button>
+        <button class="btn btn-outline-success" onclick="exportCSV()">
+          📄 Export CSV
+        </button>
+        <button class="btn btn-outline-danger" onclick="exportIncorrectCSV()">
+          📄 Export Incorrect
+        </button>
+        <button class="btn btn-outline-secondary" onclick="resetProgress()">
+          ♻️ Reset Progress
+        </button>
+        <button class="btn btn-outline-success" onclick="markUpToWord()">
+          ✅ Mark Up To Word
+        </button>
+        <button
+          id="timerBtn"
+          class="btn btn-outline-primary"
+          onclick="startStopTimer()"
+        >
+          Start Timer
+        </button>
+        <button class="btn btn-outline-warning" onclick="exitFocusMode()">
+          🚪 Exit Focus Mode
+        </button>
+        <button
+          class="btn btn-outline-secondary"
+          onclick="document.getElementById('importFileInput').click()"
+        >
+          📂 Import CSV
+        </button>
+        <input
+          type="file"
+          id="importFileInput"
+          style="display: none"
+          accept=".csv"
+          onchange="importCSV(event)"
+        />
+
+        <div
+          id="currentLetterDisplay"
+          style="
+            position: fixed;
+            top: 10px;
+            right: 10px;
+            font-size: 1.5em;
+            color: #333;
+          "
+        ></div>
+      </div>
+
+      <div
+        id="quizTableContainer"
+        class="table-responsive"
+        style="max-height: 70vh; overflow-y: auto"
+      ></div>
+      <div
+        id="completionMessage"
+        class="text-center mt-4 fs-4 fw-bold text-success"
+      ></div>
+    </div>
+
+    <script>
+      const wordList = [];
+      let corrects = [];
+      let currentSpot = 0;
+      let randomizedList = [];
+      let displayIndices = [];
+      let mode = "alphabetized";
+      let previousFirstLetter = null;
+      let hiddenLetter = null;
+
+      function prepareWordPairs() {
+        return wordList.map((word, i) => ({ word, index: i }));
+      }
+
+      function shuffleByFirstLetterWithIndices(sortedPairs) {
+        const groups = {};
+        sortedPairs.forEach(({ word, index }) => {
+          const letter = word[0].toLowerCase();
+          if (!groups[letter]) groups[letter] = [];
+          groups[letter].push({ word, index });
+        });
+        Object.keys(groups).forEach((letter) => {
+          groups[letter].sort(() => Math.random() - 0.5);
+        });
+        const sortedLetters = Object.keys(groups).sort();
+        let result = [];
+        for (const letter of sortedLetters) {
+          result = result.concat(groups[letter]);
+        }
+        return result;
+      }
+
+      function setMode(newMode) {
+        mode = newMode;
+        const wordPairs = prepareWordPairs();
+        if (mode === "randomized") {
+          randomizedList = [...wordPairs].sort(() => Math.random() - 0.5);
+        } else if (mode === "letter") {
+          const sortedPairs = [...wordPairs].sort((a, b) =>
+            a.word.localeCompare(b.word, undefined, { sensitivity: "base" })
+          );
+          randomizedList = shuffleByFirstLetterWithIndices(sortedPairs);
+        } else {
+          randomizedList = [...wordPairs].sort((a, b) =>
+            a.word.localeCompare(b.word, undefined, { sensitivity: "base" })
+          );
+        }
+        displayIndices = randomizedList.map((item) => item.index);
+        saveState();
+        renderTable();
+      }
+
+      function playAudio(word) {
+        const audio = new Audio(`audio/${word}.mp3`);
+        audio.play().catch(() => {}); // play but ignore errors silently
+      }
+
+      function mark(displayIndex, status) {
+        const originalIndex = displayIndices[displayIndex];
+        corrects[originalIndex] = status;
+        currentSpot = displayIndex + 1;
+        saveState();
+        renderTable();
+      }
+
+      function scrollToCurrent() {
+        const rows = document.querySelectorAll("tbody tr");
+        if (rows[currentSpot]) {
+          rows[currentSpot].scrollIntoView({
+            behavior: "smooth",
+            block: "center",
+          });
+        }
+      }
+      let showOnlyIncorrect =
+        localStorage.getItem("focusOnIncorrect") === "true";
+
+      function saveState() {
+        localStorage.setItem("corrects", JSON.stringify(corrects));
+        localStorage.setItem("currentSpot", currentSpot);
+        localStorage.setItem("randomizedList", JSON.stringify(randomizedList));
+        localStorage.setItem("mode", mode);
+        localStorage.setItem("activeWordList", JSON.stringify(wordList));
+        localStorage.setItem("focusOnIncorrect", showOnlyIncorrect);
+      }
+
+      function loadState() {
+        const savedWords = localStorage.getItem("activeWordList");
+        if (savedWords) {
+          wordList.length = 0;
+          wordList.push(...JSON.parse(savedWords));
+        }
+
+        corrects = JSON.parse(localStorage.getItem("corrects") || "[]");
+        currentSpot = parseInt(localStorage.getItem("currentSpot")) || 0;
+        randomizedList = JSON.parse(
+          localStorage.getItem("randomizedList") || "[]"
+        );
+        mode = localStorage.getItem("mode") || "alphabetized";
+        displayIndices = randomizedList.map((item) => item.index);
+      }
+
+      function renderTable(scroll = true) {
+        const container = document.getElementById("quizTableContainer");
+        container.innerHTML = "";
+
+        const table = document.createElement("table");
+        table.className = "table table-striped table-hover";
+        const tbody = document.createElement("tbody");
+
+        const list = randomizedList.length
+          ? randomizedList
+          : prepareWordPairs();
+        let prevLetter = null;
+        let visibleIndex = 0;
+
+        list.forEach(({ word, index: originalIndex }, displayIndex) => {
+          if (showOnlyIncorrect && corrects[originalIndex] !== undefined)
+            return;
+
+          const row = document.createElement("tr");
+          if (timerRunning) {
+            row.classList.add("hidden-word");
+          }
+
+          const currentLetter = word[0].toLowerCase();
+          if (prevLetter !== null && currentLetter !== prevLetter) {
+            row.style.borderTop = "6px solid black";
+          }
+          prevLetter = currentLetter;
+
+          row.className =
+            corrects[originalIndex] === "correct"
+              ? "done-row"
+              : corrects[originalIndex] === "incorrect"
+              ? "unfinished-row"
+              : "";
+
+          const indexCell = document.createElement("td");
+          indexCell.textContent = ++visibleIndex;
+
+          const wordCell = document.createElement("td");
+          wordCell.textContent = word;
+          wordCell.classList.add("word-cell");
+          wordCell.onclick = () => playAudio(word);
+
+          const actionCell = document.createElement("td");
+          if (corrects[originalIndex]) {
+            actionCell.textContent =
+              corrects[originalIndex] === "correct" ? "✅ " : "❌ ";
+            const recycleBtn = document.createElement("button");
+            recycleBtn.className = "btn btn-sm btn-outline-secondary ms-2";
+            recycleBtn.textContent = "♻️";
+            recycleBtn.onclick = (e) => {
+              e.stopPropagation();
+              corrects[originalIndex] = undefined;
+              saveState();
+              renderTable(false);
+            };
+            actionCell.appendChild(recycleBtn);
+          } else {
+            const pronounceBtn = document.createElement("button");
+            pronounceBtn.className = "btn btn-sm btn-primary me-2";
+            pronounceBtn.textContent = "🔈";
+            pronounceBtn.onclick = () => playAudio(word);
+
+            const correctBtn = document.createElement("button");
+            correctBtn.className = "btn btn-sm btn-success me-1";
+            correctBtn.textContent = "✅";
+            correctBtn.onclick = () => mark(displayIndex, "correct");
+
+            const incorrectBtn = document.createElement("button");
+            incorrectBtn.className = "btn btn-sm btn-danger";
+            incorrectBtn.textContent = "❌";
+            incorrectBtn.onclick = () => mark(displayIndex, "incorrect");
+
+            actionCell.append(pronounceBtn, correctBtn, incorrectBtn);
+          }
+
+          row.append(indexCell, wordCell, actionCell);
+          tbody.appendChild(row);
+        });
+
+        table.appendChild(tbody);
+        container.appendChild(table);
+
+        if (scroll) scrollToCurrent();
+        checkCompletion();
+      }
+
+      function checkCompletion() {
+        const allMarked =
+          corrects.length === wordList.length &&
+          wordList.length > 0 &&
+          corrects.every((v) => v === "correct" || v === "incorrect");
+
+        if (allMarked) {
+          const incorrectIndices = corrects
+            .map((status, i) => (status === "incorrect" ? i : null))
+            .filter((i) => i !== null);
+
+          if (incorrectIndices.length > 0) {
+            exportIncorrectCSV();
+            incorrectIndices.forEach((i) => (corrects[i] = undefined));
+            showOnlyIncorrect = true;
+            saveState();
+            renderTable();
+          } else {
+            showOnlyIncorrect = false;
+            saveState();
+            document.getElementById("completionMessage").textContent =
+              "🏆 Congrats! All words done.";
+          }
+        } else {
+          document.getElementById("completionMessage").textContent = "";
+        }
+      }
+
+      function exitFocusMode() {
+        showOnlyIncorrect = false;
+        saveState();
+        setMode(mode);
+      }
+
+      function exportCSV() {
+        const list = randomizedList.length
+          ? randomizedList
+          : prepareWordPairs();
+        let csv = "Word,Status\n";
+        list.forEach(({ word, index: originalIndex }) => {
+          let status = corrects[originalIndex] || "";
+          csv += `"${word}","${status}"\n`;
+        });
+        const blob = new Blob([csv], { type: "text/csv" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = "spelling_results.csv";
+        a.click();
+        URL.revokeObjectURL(url);
+      }
+      function importCSV(event) {
+        const file = event.target.files[0];
+        if (!file) return;
+
+        const reader = new FileReader();
+        reader.onload = function (e) {
+          const text = e.target.result;
+          const lines = text.trim().split("\n").slice(1); // skip header
+          const importedStatus = {};
+          lines.forEach((line) => {
+            const [wordRaw, statusRaw] = line
+              .split(",")
+              .map((s) => s.replace(/(^"|"$)/g, "").trim());
+            importedStatus[wordRaw.toLowerCase()] = statusRaw.toLowerCase();
+          });
+
+          wordList.forEach((word, index) => {
+            const status = importedStatus[word.toLowerCase()];
+            if (status === "correct" || status === "incorrect") {
+              corrects[index] = status;
+            } else {
+              corrects[index] = undefined;
+            }
+          });
+
+          showOnlyIncorrect = false;
+          saveState();
+          renderTable();
+          alert("CSV imported successfully!");
+        };
+        reader.readAsText(file);
+      }
+
+      async function loadWordList() {
+        try {
+          const response = await fetch("wordList.json");
+          if (!response.ok) throw new Error("Failed to load wordList.json");
+          wordList.length = 0;
+          wordList.push(...(await response.json()));
+        } catch (error) {
+          console.error("Error loading word list:", error);
+          alert("Failed to load word list.");
+        }
+      }
+
+      let timerRunning = false;
+      let timerIndex = 0;
+
+      function startStopTimer() {
+        if (timerRunning) return;
+        const input = prompt("Enter letter or word to start at:")
+          ?.trim()
+          .toLowerCase();
+        if (!input) return;
+
+        const list = randomizedList.length
+          ? randomizedList
+          : prepareWordPairs();
+        let startIndex = -1;
+
+        if (input.length === 1 && /[a-z]/.test(input)) {
+          startIndex = list.findIndex(
+            ({ word }) => word[0].toLowerCase() === input
+          );
+          hiddenLetter = input;
+        } else {
+          startIndex = list.findIndex(
+            ({ word }) => word.toLowerCase() === input
+          );
+          hiddenLetter = list[startIndex]?.word[0].toLowerCase();
+        }
+
+        if (startIndex === -1) {
+          alert("Not found.");
+          return;
+        }
+
+        timerIndex = startIndex;
+        timerRunning = true;
+        updateCurrentLetterDisplay();
+        document.getElementById("timerBtn").textContent =
+          "Timer Running (Q to stop)";
+        document
+          .getElementById("quizTableContainer")
+          .classList.add("timer-running");
+        renderTable();
+        runTimerCycle();
+      }
+      function updateCurrentLetterDisplay() {
+  const list = randomizedList.length ? randomizedList : prepareWordPairs();
+  if (timerIndex >= list.length || timerIndex < 0) {
+    document.getElementById("currentLetterDisplay").textContent = "";
+    return;
+  }
+
+  const currentWord = list[timerIndex].word;
+  const currentLetter = currentWord[0].toUpperCase();
+
+  // Count words left starting with this letter from current index
+  let wordsLeft = 0;
+  for (let i = timerIndex; i < list.length; i++) {
+    if (list[i].word[0].toLowerCase() === currentLetter.toLowerCase()) {
+      wordsLeft++;
+    } else {
+      break;
+    }
+  }
+
+  document.getElementById("currentLetterDisplay").innerHTML =
+    `Current Letter: <strong>${currentLetter}</strong><br>` +
+    `Word Index: <strong>${timerIndex + 1}</strong><br>` +
+    `Words Left This Letter: <strong>${wordsLeft}</strong>`;
+}
+
+      function stopTimer() {
+        timerRunning = false;
+        hiddenLetter = null;
+        document.getElementById("currentLetterDisplay").textContent = "";
+        document
+          .getElementById("quizTableContainer")
+          .classList.remove("timer-running");
+        renderTable();
+        document.getElementById("timerBtn").textContent = "Start Timer";
+      }
+
+      let previousLetterForTimer = null;
+
+      async function runTimerCycle() {
+        const list = randomizedList.length
+          ? randomizedList
+          : prepareWordPairs();
+        if (timerIndex >= list.length) {
+          stopTimer();
+          alert("End of list.");
+          return;
+        }
+        updateCurrentLetterDisplay();
+        const currentWord = list[timerIndex].word;
+        const currentLetter = currentWord[0].toLowerCase();
+        const originalIndex = list[timerIndex].index;
+
+        // Check if word already done
+        if (
+          corrects[originalIndex] === "correct" ||
+          corrects[originalIndex] === "incorrect"
+        ) {
+          try {
+            await playAudio("NONEED");
+          } catch {}
+
+          // Do NOT auto-advance. Just wait for user action to advance.
+          return;
+        }
+
+        // Play DING if starting letter changed since last word
+        if (
+          previousLetterForTimer !== null &&
+          previousLetterForTimer !== currentLetter
+        ) {
+          try {
+            await playAudio("DING");
+          } catch {}
+        }
+
+        previousLetterForTimer = currentLetter;
+
+        // Play the current word audio
+        try {
+          await playAudio(currentWord);
+        } catch {}
+      }
+
+      window.addEventListener("auxclick", (e) => {
+        if (!timerRunning) return;
+        e.preventDefault();
+        if (e.button === 1) {
+          timerIndex = Math.max(0, timerIndex - 1);
+          runTimerCycle();
+        }
+      });
+
+      document.addEventListener("mousedown", (e) => {
+        if (!timerRunning) return;
+        e.preventDefault();
+        const list = randomizedList.length
+          ? randomizedList
+          : prepareWordPairs();
+        if (e.button === 0 && timerIndex < list.length) {
+          playAudio(list[timerIndex].word);
+        } else if (e.button === 2) {
+          timerIndex++;
+          runTimerCycle();
+        }
+      });
+      document.addEventListener("keydown", (e) => {
+        if (!timerRunning) return;
+
+        const list = randomizedList.length
+          ? randomizedList
+          : prepareWordPairs();
+
+        switch (e.key) {
+          case "ArrowUp":
+          case "ArrowDown":
+            e.preventDefault();
+            if (timerIndex < list.length) {
+              playAudio(list[timerIndex].word);
+            }
+            break;
+          case "ArrowLeft":
+            e.preventDefault();
+            timerIndex = Math.max(0, timerIndex - 1);
+            runTimerCycle();
+            break;
+          case "ArrowRight":
+            e.preventDefault();
+            timerIndex = Math.min(list.length - 1, timerIndex + 1);
+            runTimerCycle();
+            break;
+          case "q": // keep your existing Q to stop timer
+          case "Q":
+            e.preventDefault();
+            stopTimer();
+            break;
+        }
+      });
+
+      document.addEventListener("contextmenu", (e) => {
+        if (timerRunning) e.preventDefault();
+      });
+
+      document.addEventListener("keydown", (e) => {
+        if (timerRunning && e.key.toLowerCase() === "q") stopTimer();
+      });
+      document.addEventListener("keydown", (e) => {
+        if (timerRunning) return;
+        const key = e.key.toLowerCase();
+        if (key === "u") {
+          mark(currentSpot, "correct");
+        }
+        if (key === "i") {
+          mark(currentSpot, "incorrect");
+        }
+      });
+      window.onload = async () => {
+        await loadWordList();
+        loadState();
+        if (
+          !randomizedList.length ||
+          !["alphabetized", "randomized", "letter"].includes(mode)
+        ) {
+          setMode("alphabetized");
+        } else {
+          displayIndices = randomizedList.map((item) => item.index);
+          renderTable();
+        }
+      };
+    </script>
+  </body>
+</html>
