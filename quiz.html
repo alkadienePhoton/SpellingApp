@@ -105,6 +105,16 @@
             color: #333;
           "
         ></div>
+        <button class="btn btn-outline-primary" onclick="importAndListWords()">
+          📂 Import CSV & List Words
+        </button>
+        <input
+          type="file"
+          id="csvWordsInput"
+          style="display: none"
+          accept=".csv"
+          onchange="handleCSVWords(event)"
+        />
       </div>
 
       <div
@@ -119,6 +129,7 @@
     </div>
 
     <script>
+      let skipCheckCompletion = false;
       const wordList = [];
       let corrects = [];
       let currentSpot = 0;
@@ -127,6 +138,30 @@
       let mode = "alphabetized";
       let previousFirstLetter = null;
       let hiddenLetter = null;
+      function importAndListWords() {
+        document.getElementById("csvWordsInput").value = null; // reset file input
+        document.getElementById("csvWordsInput").click();
+      }
+
+      function handleCSVWords(event) {
+        const file = event.target.files[0];
+        if (!file) return;
+
+        const reader = new FileReader();
+        reader.onload = function (e) {
+          const text = e.target.result;
+          const lines = text.trim().split("\n").slice(1); // skip header
+
+          const words = lines.map((line) => {
+            const wordRaw = line.split(",")[0] || "";
+            return wordRaw.replace(/(^"|"$)/g, "").trim();
+          });
+
+          // Log JSON string for easy copy-pasting
+          console.log(JSON.stringify(words, null, 2));
+        };
+        reader.readAsText(file);
+      }
 
       function prepareWordPairs() {
         return wordList.map((word, i) => ({ word, index: i }));
@@ -157,12 +192,16 @@
           randomizedList = [...wordPairs].sort(() => Math.random() - 0.5);
         } else if (mode === "letter") {
           const sortedPairs = [...wordPairs].sort((a, b) =>
-            a.word.localeCompare(b.word, undefined, { sensitivity: "base" })
+            a.word.localeCompare(b.word, undefined, {
+              sensitivity: "base",
+            })
           );
           randomizedList = shuffleByFirstLetterWithIndices(sortedPairs);
         } else {
           randomizedList = [...wordPairs].sort((a, b) =>
-            a.word.localeCompare(b.word, undefined, { sensitivity: "base" })
+            a.word.localeCompare(b.word, undefined, {
+              sensitivity: "base",
+            })
           );
         }
         displayIndices = randomizedList.map((item) => item.index);
@@ -309,6 +348,8 @@
       }
 
       function checkCompletion() {
+        if (skipCheckCompletion) return;
+
         const allMarked =
           corrects.length === wordList.length &&
           wordList.length > 0 &&
@@ -320,7 +361,7 @@
             .filter((i) => i !== null);
 
           if (incorrectIndices.length > 0) {
-            exportIncorrectCSV();
+            exportCSV();
             incorrectIndices.forEach((i) => (corrects[i] = undefined));
             showOnlyIncorrect = true;
             saveState();
@@ -334,12 +375,6 @@
         } else {
           document.getElementById("completionMessage").textContent = "";
         }
-      }
-
-      function exitFocusMode() {
-        showOnlyIncorrect = false;
-        saveState();
-        setMode(mode);
       }
 
       function exportCSV() {
@@ -362,6 +397,8 @@
       function importCSV(event) {
         const file = event.target.files[0];
         if (!file) return;
+
+        skipCheckCompletion = true;
 
         const reader = new FileReader();
         reader.onload = function (e) {
@@ -388,6 +425,7 @@
           saveState();
           renderTable();
           alert("CSV imported successfully!");
+          skipCheckCompletion = false;
         };
         reader.readAsText(file);
       }
@@ -448,30 +486,38 @@
         runTimerCycle();
       }
       function updateCurrentLetterDisplay() {
-  const list = randomizedList.length ? randomizedList : prepareWordPairs();
-  if (timerIndex >= list.length || timerIndex < 0) {
-    document.getElementById("currentLetterDisplay").textContent = "";
-    return;
-  }
+        const list = randomizedList.length
+          ? randomizedList
+          : prepareWordPairs();
 
-  const currentWord = list[timerIndex].word;
-  const currentLetter = currentWord[0].toUpperCase();
+        if (timerIndex >= list.length || timerIndex < 0) {
+          document.getElementById("currentLetterDisplay").textContent = "";
+          return;
+        }
 
-  // Count words left starting with this letter from current index
-  let wordsLeft = 0;
-  for (let i = timerIndex; i < list.length; i++) {
-    if (list[i].word[0].toLowerCase() === currentLetter.toLowerCase()) {
-      wordsLeft++;
-    } else {
-      break;
-    }
-  }
+        const currentWord = list[timerIndex].word;
+        const currentLetter = currentWord[0].toUpperCase();
 
-  document.getElementById("currentLetterDisplay").innerHTML =
-    `Current Letter: <strong>${currentLetter}</strong><br>` +
-    `Word Index: <strong>${timerIndex + 1}</strong><br>` +
-    `Words Left This Letter: <strong>${wordsLeft}</strong>`;
-}
+        // Count words left starting with this letter from current index
+        let wordsLeftThisLetter = 0;
+        for (let i = timerIndex; i < list.length; i++) {
+          if (list[i].word[0].toLowerCase() === currentLetter.toLowerCase()) {
+            wordsLeftThisLetter++;
+          } else {
+            break;
+          }
+        }
+
+        const totalWordsLeft = list.length - timerIndex;
+        const progressPercent = Math.floor((timerIndex / list.length) * 100);
+
+        document.getElementById("currentLetterDisplay").innerHTML =
+          `Current Letter: <strong>${currentLetter}</strong><br>` +
+          `Word Index: <strong>${timerIndex + 1}</strong><br>` +
+          `Words Left This Letter: <strong>${wordsLeftThisLetter}</strong><br>` +
+          `Total Words Left: <strong>${totalWordsLeft}</strong><br>` +
+          `Progress: <strong>${progressPercent}%</strong>`;
+      }
 
       function stopTimer() {
         timerRunning = false;
@@ -616,6 +662,116 @@
           renderTable();
         }
       };
+      function exportIncorrectCSV() {
+        const incorrectWords = randomizedList
+          .filter(
+            ({ index: originalIndex }) =>
+              corrects[originalIndex] === "incorrect"
+          )
+          .map(({ word }) => word);
+
+        const json = JSON.stringify(incorrectWords, null, 2);
+
+        const blob = new Blob([json], { type: "application/json" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = "incorrect_words.json";
+        a.click();
+        URL.revokeObjectURL(url);
+      }
+
+      function resetProgress() {
+        if (!confirm("Are you sure you want to reset all progress?")) return;
+
+        skipCheckCompletion = true;
+
+        corrects = [];
+        currentSpot = 0;
+        randomizedList = [];
+        displayIndices = [];
+        mode = "alphabetized";
+        hiddenLetter = null;
+        previousFirstLetter = null;
+        previousLetterForTimer = null;
+        showOnlyIncorrect = false;
+
+        localStorage.removeItem("corrects");
+        localStorage.removeItem("currentSpot");
+        localStorage.removeItem("randomizedList");
+        localStorage.removeItem("mode");
+        localStorage.removeItem("activeWordList");
+        localStorage.removeItem("focusOnIncorrect");
+
+        setMode(mode);
+
+        skipCheckCompletion = false;
+      }
+
+      function jumpToWord() {
+        const input = prompt("Enter the word you want to jump to:")
+          ?.trim()
+          .toLowerCase();
+        if (!input) return;
+
+        const list = randomizedList.length
+          ? randomizedList
+          : prepareWordPairs();
+        const index = list.findIndex(
+          ({ word }) => word.toLowerCase() === input
+        );
+
+        if (index === -1) {
+          alert("Word not found.");
+          return;
+        }
+
+        currentSpot = index;
+        saveState();
+        renderTable();
+      }
+
+      function jumpToLetter() {
+        const input = prompt("Enter the letter you want to jump to:")
+          ?.trim()
+          .toLowerCase();
+        if (!input || input.length !== 1 || !/[a-z]/.test(input)) {
+          alert("Please enter a single letter A-Z.");
+          return;
+        }
+
+        const list = randomizedList.length
+          ? randomizedList
+          : prepareWordPairs();
+        const index = list.findIndex(
+          ({ word }) => word[0].toLowerCase() === input
+        );
+
+        if (index === -1) {
+          alert("No words starting with that letter.");
+          return;
+        }
+
+        currentSpot = index;
+        saveState();
+        renderTable();
+      }
+
+      function markUpToWord() {
+        if (!confirm("Mark all words up to the current one as correct?"))
+          return;
+
+        const list = randomizedList.length
+          ? randomizedList
+          : prepareWordPairs();
+        for (let i = 0; i <= currentSpot; i++) {
+          const originalIndex = list[i].index;
+          corrects[originalIndex] = "correct";
+        }
+        currentSpot++;
+        saveState();
+        renderTable();
+      }
     </script>
   </body>
 </html>
