@@ -662,6 +662,23 @@
           renderTable();
         }
       };
+      function exportWordsJSON() {
+        const blob = new Blob([JSON.stringify(wordList, null, 2)], {
+          type: "application/json",
+        });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = "word_list.json";
+        a.click();
+        URL.revokeObjectURL(url);
+      }
+      function exitFocusMode() {
+        showOnlyIncorrect = false;
+        saveState();
+        renderTable();
+        alert("Focus mode exited. Showing all words.");
+      }
       function exportIncorrectCSV() {
         const incorrectWords = randomizedList
           .filter(
@@ -685,7 +702,7 @@
         if (!confirm("Are you sure you want to reset all progress?")) return;
 
         skipCheckCompletion = true;
-
+        exitFocusMode();
         corrects = [];
         currentSpot = 0;
         randomizedList = [];

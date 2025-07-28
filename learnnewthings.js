@@ -27,12 +27,12 @@ const filteredWords = allWords.filter(
 );
 
 // Use lodash for better shuffling
-const selected = _.shuffle(filteredWords).slice(0, 15);
+const selected = _.shuffle(filteredWords).slice(0, 50);
 
 console.log('Selected words:', selected);
 
-// Open them in Merriam-Webster
+// Open them in Google search
 selected.forEach(word => {
-  const url = `https://www.merriam-webster.com/dictionary/${encodeURIComponent(word)}`;
+  const url = `https://google.com/search?q=define+${encodeURIComponent(word)}`;
   exec(`start ${url}`);
 });

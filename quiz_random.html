@@ -1,0 +1,751 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Spelling Quiz — 25 Random Words with Timer</title>
+    <link
+      href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css"
+      rel="stylesheet"
+    />
+    <style>
+      .definition-cell {
+        font-size: 0.9em;
+        max-width: 300px;
+        white-space: normal;
+      }
+      .done-row {
+        background-color: #0d6efd !important;
+        color: white;
+      }
+      .unfinished-row {
+        background-color: #e7f1ff !important;
+      }
+      td.word-cell {
+        cursor: pointer;
+      }
+      td.word-cell:hover {
+        text-decoration: underline dotted;
+        background-color: #eef3f8;
+      }
+      .timer-running .word-cell,
+      .timer-running .definition-cell {
+        color: transparent !important;
+        user-select: none;
+      }
+      #currentLetterDisplay {
+        position: fixed;
+        top: 10px;
+        right: 10px;
+        font-size: 1.5em;
+        color: #333;
+        background: #fff;
+        padding: 0.3em 0.5em;
+        border-radius: 0.3em;
+        box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+        user-select: none;
+      }
+    </style>
+  </head>
+  <body class="bg-light">
+    <div class="container py-4">
+      <h2 class="text-center mb-4">🧠 Spelling Quiz (25 Random Words)</h2>
+
+      <div class="d-flex flex-wrap justify-content-center gap-2 mb-3">
+        <button
+          class="btn btn-outline-primary"
+          onclick="setMode('alphabetized')"
+        >
+          Alphabetized
+        </button>
+        <button
+          class="btn btn-outline-secondary"
+          onclick="setMode('randomized')"
+        >
+          Randomized
+        </button>
+        <button class="btn btn-outline-info" onclick="setMode('letter')">
+          Shuffle by Letter
+        </button>
+        <button class="btn btn-outline-dark" onclick="jumpToWord()">
+          🔍 Jump to Word
+        </button>
+        <button class="btn btn-outline-warning" onclick="jumpToLetter()">
+          🔤 Jump to Letter
+        </button>
+        <button class="btn btn-outline-success" onclick="exportCSV()">
+          📄 Export CSV
+        </button>
+        <button class="btn btn-outline-secondary" onclick="resetProgress()">
+          ♻️ Reset Progress
+        </button>
+        <button
+          id="timerBtn"
+          class="btn btn-outline-primary"
+          onclick="startStopTimer()"
+        >
+          Start Timer
+        </button>
+      </div>
+
+      <div
+        id="quizTableContainer"
+        class="table-responsive"
+        style="max-height: 70vh; overflow-y: auto"
+      ></div>
+      <div
+        id="completionMessage"
+        class="text-center mt-4 fs-4 fw-bold text-success"
+      ></div>
+      <div id="currentLetterDisplay"></div>
+    </div>
+
+    <script>
+      // Globals
+      let wordList = [];
+      let corrects = [];
+      let randomizedList = [];
+      let displayIndices = [];
+      let currentSpot = 0;
+      let mode = "alphabetized";
+      let timerRunning = false;
+      let timerIndex = 0;
+      let hiddenLetter = null;
+      let previousLetterForTimer = null;
+      let definitionCache = {};
+      const MW_API_KEY = "e457edc6-600b-485d-a4e7-414c49fa22dc";
+      async function getDefinition(word) {
+        if (definitionCache[word]) return definitionCache[word];
+
+        const stem = word.replace(/(ing|ed|ly|es|s)$/, ""); // crude stemmer
+
+        const highlight = (text) => {
+          const regex = new RegExp(`\\b(${stem}\\w*)\\b`, "gi");
+          return text.replace(regex, "[word]");
+        };
+
+        const sources = [
+          {
+            name: "Merriam-Webster (Proxy)",
+            url: `http://localhost:2000/api/define?word=${word}`,
+            async fetch() {
+              const res = await fetch(this.url);
+              const data = await res.json();
+
+              if (!Array.isArray(data) || !data[0]?.shortdef)
+                throw new Error("No MW definition");
+
+              return data.map((entry) => ({
+                partOfSpeech: entry.fl || "",
+                definition: highlight(entry.shortdef[0]),
+                example: "",
+                source: this.name,
+                sourceUrl: `https://www.merriam-webster.com/dictionary/${word}`,
+              }));
+            },
+          },
+          {
+            name: "Free Dictionary",
+            url: `https://api.dictionaryapi.dev/api/v2/entries/en/${word}`,
+            async fetch() {
+              const res = await fetch(this.url);
+              const data = await res.json();
+              if (!Array.isArray(data))
+                throw new Error("No FreeDict definition");
+
+              const defs = [];
+              data.forEach((entry) => {
+                entry.meanings.forEach((meaning) => {
+                  meaning.definitions.forEach((def) => {
+                    defs.push({
+                      partOfSpeech: meaning.partOfSpeech || "",
+                      definition: highlight(def.definition),
+                      example: def.example ? highlight(def.example) : "",
+                      source: this.name,
+                      sourceUrl: `https://dictionaryapi.dev/`,
+                    });
+                  });
+                });
+              });
+              return defs;
+            },
+          },
+          {
+            name: "Wiktionary",
+            url: `https://en.wiktionary.org/api/rest_v1/page/definition/${word}`,
+            async fetch() {
+              const res = await fetch(this.url);
+              const data = await res.json();
+              if (!data.en) throw new Error("No English Wiktionary entry");
+
+              const defs = [];
+              data.en.forEach((entry) => {
+                entry.definitions.forEach((defObj) => {
+                  const defText = highlight(
+                    defObj.definition.replace(/<[^>]+>/g, "")
+                  );
+                  const ex =
+                    defObj.parsedExamples?.[0]?.example?.replace(
+                      /<[^>]+>/g,
+                      ""
+                    ) || "";
+                  defs.push({
+                    partOfSpeech: entry.partOfSpeech || "",
+                    definition: defText,
+                    example: highlight(ex),
+                    source: this.name,
+                    sourceUrl: this.url,
+                  });
+                });
+              });
+              return defs;
+            },
+          },
+        ];
+
+        for (let source of sources) {
+          try {
+            const definitions = await source.fetch();
+            definitionCache[word] = definitions;
+            return definitions;
+          } catch (_) {
+            // Try next source
+          }
+        }
+
+        definitionCache[word] = [
+          {
+            partOfSpeech: "",
+            definition: "❌ No definition found.",
+            example: "fail: no source found",
+            source: "",
+            sourceUrl: "",
+          },
+        ];
+        return definitionCache[word];
+      }
+
+      // Load and prepare word lists
+      async function loadWordsFromFiles() {
+        try {
+          // Fetch all_words.txt
+          const allWordsTxt = await fetch("all_words.txt").then((r) =>
+            r.text()
+          );
+          const allWords = allWordsTxt
+            .split("\n")
+            .map((w) => w.trim().toLowerCase())
+            .filter(Boolean);
+
+          // Fetch cleaned_words.txt
+          const cleanedTxt = await fetch("cleaned_words.txt").then((r) =>
+            r.text()
+          );
+          const cleanedWordsSet = new Set(
+            cleanedTxt
+              .split("\n")
+              .map((w) => w.trim().toLowerCase())
+              .filter(Boolean)
+          );
+
+          // Fetch profanity.txt (base64 encoded lines)
+          const profanityTxt = await fetch("profanity.txt").then((r) =>
+            r.text()
+          );
+          const profanityWordsSet = new Set(
+            profanityTxt
+              .split("\n")
+              .map((line) => {
+                try {
+                  return atob(line.trim()).toLowerCase();
+                } catch {
+                  return null;
+                }
+              })
+              .filter(Boolean)
+          );
+
+          // Filter words: exclude cleaned + profanity
+          const filtered = allWords.filter(
+            (word) => !cleanedWordsSet.has(word) && !profanityWordsSet.has(word)
+          );
+
+          // Pick 25 random words
+          randomizedList = shuffleArray(filtered)
+            .slice(0, 25)
+            .map((word, idx) => ({ word, index: idx }));
+          wordList = randomizedList.map(({ word }) => word);
+          displayIndices = randomizedList.map(({ index }) => index);
+
+          // Reset progress
+          corrects = new Array(wordList.length).fill(undefined);
+          currentSpot = 0;
+          mode = "alphabetized";
+
+          setMode(mode);
+        } catch (err) {
+          alert("Failed to load word lists: " + err.message);
+          console.error(err);
+        }
+      }
+
+      function shuffleArray(arr) {
+        // Fisher–Yates shuffle
+        const a = arr.slice();
+        for (let i = a.length - 1; i > 0; i--) {
+          const j = Math.floor(Math.random() * (i + 1));
+          [a[i], a[j]] = [a[j], a[i]];
+        }
+        return a;
+      }
+
+      function prepareWordPairs() {
+        return wordList.map((word, i) => ({ word, index: i }));
+      }
+
+      function shuffleByFirstLetterWithIndices(sortedPairs) {
+        const groups = {};
+        sortedPairs.forEach(({ word, index }) => {
+          const letter = word[0].toLowerCase();
+          if (!groups[letter]) groups[letter] = [];
+          groups[letter].push({ word, index });
+        });
+        Object.keys(groups).forEach((letter) => {
+          groups[letter].sort(() => Math.random() - 0.5);
+        });
+        const sortedLetters = Object.keys(groups).sort();
+        let result = [];
+        for (const letter of sortedLetters) {
+          result = result.concat(groups[letter]);
+        }
+        return result;
+      }
+
+      function setMode(newMode) {
+        mode = newMode;
+        const wordPairs = prepareWordPairs();
+
+        if (mode === "randomized") {
+          randomizedList = [...wordPairs].sort(() => Math.random() - 0.5);
+        } else if (mode === "letter") {
+          const sortedPairs = [...wordPairs].sort((a, b) =>
+            a.word.localeCompare(b.word, undefined, { sensitivity: "base" })
+          );
+          randomizedList = shuffleByFirstLetterWithIndices(sortedPairs);
+        } else {
+          randomizedList = [...wordPairs].sort((a, b) =>
+            a.word.localeCompare(b.word, undefined, { sensitivity: "base" })
+          );
+        }
+        displayIndices = randomizedList.map((item) => item.index);
+        renderTable();
+      }
+
+      // Play audio using Google Translate TTS
+      async function playAudio(word, voice = "en-US") {
+        if (!word) return;
+        // Assuming your local TTS proxy supports voice param in URL
+        // If not, you can modify your backend to accept voice or skip this param
+        const proxyUrl = `http://localhost:3000/tts?word=${encodeURIComponent(
+          word
+        )}&voice=${voice}`;
+
+        try {
+          const audio = new Audio(proxyUrl);
+          await audio.play();
+        } catch (err) {
+          console.warn("Failed to play audio:", err);
+        }
+      }
+
+      function mark(displayIndex, status) {
+        const originalIndex = displayIndices[displayIndex];
+        corrects[originalIndex] = status;
+        currentSpot = displayIndex + 1;
+        renderTable();
+      }
+
+      function scrollToCurrent() {
+        const rows = document.querySelectorAll("tbody tr");
+        if (rows[currentSpot]) {
+          rows[currentSpot].scrollIntoView({
+            behavior: "smooth",
+            block: "center",
+          });
+        }
+      }
+
+      function renderTable(scroll = true) {
+        const container = document.getElementById("quizTableContainer");
+        container.innerHTML = "";
+
+        const table = document.createElement("table");
+        table.className = "table table-striped table-hover";
+        const tbody = document.createElement("tbody");
+
+        const list = randomizedList.length
+          ? randomizedList
+          : prepareWordPairs();
+        let prevLetter = null;
+        let visibleIndex = 0;
+
+        list.forEach(({ word, index: originalIndex }, displayIndex) => {
+          const row = document.createElement("tr");
+
+          const currentLetter = word[0].toLowerCase();
+          if (prevLetter !== null && currentLetter !== prevLetter) {
+            row.style.borderTop = "6px solid black";
+          }
+          prevLetter = currentLetter;
+
+          row.className =
+            corrects[originalIndex] === "correct"
+              ? "done-row"
+              : corrects[originalIndex] === "incorrect"
+              ? "unfinished-row"
+              : "";
+
+          const indexCell = document.createElement("td");
+          indexCell.textContent = ++visibleIndex;
+
+          const wordCell = document.createElement("td");
+          wordCell.textContent = word;
+          wordCell.classList.add("word-cell");
+          wordCell.onclick = () => playAudio(word);
+
+          const actionCell = document.createElement("td");
+          const defCell = document.createElement("td");
+          defCell.className = "definition-cell";
+          defCell.textContent = "Loading...";
+          getDefinition(word).then((defData) => {
+            if (!defData || !Array.isArray(defData)) {
+              defCell.innerHTML = `<span class="text-danger">No definition available.</span>`;
+              return;
+            }
+
+            // Pick the first definition set for rendering (if you're using multiple sources)
+            const [first] = defData;
+            const { source, sourceUrl, definition, partOfSpeech, example } =
+              first;
+
+            defCell.innerHTML = `
+    <div style="font-weight:bold;">
+      Source: ${
+        sourceUrl
+          ? `<a href="${sourceUrl}" target="_blank">${source}</a>`
+          : source || "Unknown"
+      }
+    </div>
+    <div><b>${partOfSpeech || ""}</b>: ${definition || "?"}${
+              example ? `<br><i>“${example}”</i>` : ""
+            }</div>`;
+          });
+
+          if (corrects[originalIndex]) {
+            actionCell.textContent =
+              corrects[originalIndex] === "correct" ? "✅ " : "❌ ";
+            const recycleBtn = document.createElement("button");
+            recycleBtn.className = "btn btn-sm btn-outline-secondary ms-2";
+            recycleBtn.textContent = "♻️";
+            recycleBtn.onclick = (e) => {
+              e.stopPropagation();
+              corrects[originalIndex] = undefined;
+              renderTable(false);
+            };
+            actionCell.appendChild(recycleBtn);
+          } else {
+            const pronounceBtn = document.createElement("button");
+            pronounceBtn.className = "btn btn-sm btn-primary me-2";
+            pronounceBtn.textContent = "🔈";
+            pronounceBtn.onclick = () => playAudio(word);
+
+            const correctBtn = document.createElement("button");
+            correctBtn.className = "btn btn-sm btn-success me-1";
+            correctBtn.textContent = "✅";
+            correctBtn.onclick = () => mark(displayIndex, "correct");
+
+            const incorrectBtn = document.createElement("button");
+            incorrectBtn.className = "btn btn-sm btn-danger";
+            incorrectBtn.textContent = "❌";
+            incorrectBtn.onclick = () => mark(displayIndex, "incorrect");
+
+            actionCell.append(pronounceBtn, correctBtn, incorrectBtn);
+          }
+
+          row.append(indexCell, wordCell, defCell, actionCell);
+          tbody.appendChild(row);
+        });
+
+        table.appendChild(tbody);
+        container.appendChild(table);
+
+        if (scroll) scrollToCurrent();
+        checkCompletion();
+      }
+
+      function checkCompletion() {
+        const allMarked =
+          corrects.length === wordList.length &&
+          wordList.length > 0 &&
+          corrects.every((v) => v === "correct" || v === "incorrect");
+
+        if (allMarked) {
+          const incorrectIndices = corrects
+            .map((status, i) => (status === "incorrect" ? i : null))
+            .filter((i) => i !== null);
+
+          document.getElementById("completionMessage").textContent =
+            "🏁 Quiz Complete! Check your answers.";
+        } else {
+          document.getElementById("completionMessage").textContent = "";
+        }
+      }
+
+      // Export CSV
+      function exportCSV() {
+        let csv = "Word,Status\n";
+        randomizedList.forEach(({ word, index: originalIndex }) => {
+          let status = corrects[originalIndex] || "";
+          csv += `"${word}","${status}"\n`;
+        });
+        const blob = new Blob([csv], { type: "text/csv" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = "spelling_results.csv";
+        a.click();
+        URL.revokeObjectURL(url);
+      }
+
+      function resetProgress() {
+        if (!confirm("Are you sure you want to reset all progress?")) return;
+        corrects = new Array(wordList.length).fill(undefined);
+        currentSpot = 0;
+        setMode(mode);
+      }
+
+      function jumpToWord() {
+        const input = prompt("Enter the word you want to jump to:")
+          ?.trim()
+          .toLowerCase();
+        if (!input) return;
+        const list = randomizedList.length
+          ? randomizedList
+          : prepareWordPairs();
+        const index = list.findIndex(
+          ({ word }) => word.toLowerCase() === input
+        );
+        if (index === -1) {
+          alert("Word not found.");
+          return;
+        }
+        currentSpot = index;
+        renderTable();
+      }
+
+      function jumpToLetter() {
+        const input = prompt("Enter the letter you want to jump to:")
+          ?.trim()
+          .toLowerCase();
+        if (!input || input.length !== 1 || !/[a-z]/.test(input)) {
+          alert("Please enter a single letter A-Z.");
+          return;
+        }
+        const list = randomizedList.length
+          ? randomizedList
+          : prepareWordPairs();
+        const index = list.findIndex(
+          ({ word }) => word[0].toLowerCase() === input
+        );
+        if (index === -1) {
+          alert("No words starting with that letter.");
+          return;
+        }
+        currentSpot = index;
+        renderTable();
+      }
+
+      // --- Timer Functions ---
+
+      function startStopTimer() {
+        if (timerRunning) return;
+
+        const list = randomizedList.length
+          ? randomizedList
+          : prepareWordPairs();
+
+        timerIndex = 0;
+        timerRunning = true;
+        updateCurrentLetterDisplay();
+        document.getElementById("timerBtn").textContent =
+          "Timer Running (Q to stop)";
+        document
+          .getElementById("quizTableContainer")
+          .classList.add("timer-running");
+        renderTable();
+        runTimerCycle();
+      }
+
+      function updateCurrentLetterDisplay() {
+        const list = randomizedList.length
+          ? randomizedList
+          : prepareWordPairs();
+
+        const current = list[timerIndex]?.word ?? "";
+        const currentLetter = current[0]?.toUpperCase() ?? "?";
+        const done = timerIndex;
+        const left = list.length - done;
+
+        const display = `Current Letter: ${currentLetter} — ${done} done, ${left} left`;
+        document.getElementById("currentLetterDisplay").textContent = display;
+      }
+
+      function stopTimer() {
+        timerRunning = false;
+        hiddenLetter = null;
+        document.getElementById("currentLetterDisplay").textContent = "";
+        document
+          .getElementById("quizTableContainer")
+          .classList.remove("timer-running");
+        renderTable();
+        document.getElementById("timerBtn").textContent = "Start Timer";
+      }
+
+      async function runTimerCycle() {
+        const list = randomizedList.length
+          ? randomizedList
+          : prepareWordPairs();
+
+        updateCurrentLetterDisplay(); // <- always update letter display first
+
+        if (timerIndex >= list.length) {
+          stopTimer();
+          alert("End of list.");
+          return;
+        }
+
+        const currentWord = list[timerIndex].word;
+        const originalIndex = list[timerIndex].index;
+
+        if (
+          corrects[originalIndex] === "correct" ||
+          corrects[originalIndex] === "incorrect"
+        ) {
+          // Word already done, wait for user to advance
+          return;
+        }
+
+        try {
+          await playAudio(currentWord);
+        } catch {}
+
+        // Wait for user to mark before advancing
+      }
+      // Event listeners for keyboard controls
+      document.addEventListener("keydown", (e) => {
+        if (timerRunning) return; // Already handled in timer mode above
+
+        const list = randomizedList.length
+          ? randomizedList
+          : prepareWordPairs();
+        if (!list.length) return;
+
+        switch (e.key.toLowerCase()) {
+          case "u": {
+            const { index: originalIndex } = list[currentSpot];
+            mark(currentSpot, "correct");
+            if (currentSpot < list.length - 1) {
+              currentSpot++;
+              renderTable();
+            }
+            break;
+          }
+          case "i": {
+            const { index: originalIndex } = list[currentSpot];
+            mark(currentSpot, "incorrect");
+            if (currentSpot < list.length - 1) {
+              currentSpot++;
+              renderTable();
+            }
+            break;
+          }
+        }
+      });
+
+      // Event listeners for timer control & marking
+      document.addEventListener("keydown", (e) => {
+        if (!timerRunning) return;
+        const list = randomizedList.length
+          ? randomizedList
+          : prepareWordPairs();
+
+        switch (e.key) {
+          case "ArrowUp":
+            e.preventDefault();
+            // American English voice
+            playAudio(list[timerIndex].word, "en-US");
+            break;
+          case "ArrowDown":
+            e.preventDefault();
+            // British English voice
+            playAudio(list[timerIndex].word, "en-GB");
+            break;
+          // rest unchanged
+          case "ArrowLeft":
+            e.preventDefault();
+            timerIndex = Math.max(0, timerIndex - 1);
+            runTimerCycle();
+            break;
+          case "ArrowRight":
+            e.preventDefault();
+            timerIndex = Math.min(list.length - 1, timerIndex + 1);
+            runTimerCycle();
+            break;
+          case "q":
+          case "Q":
+            e.preventDefault();
+            stopTimer();
+            break;
+          case "u":
+            e.preventDefault();
+            mark(timerIndex, "correct");
+            timerIndex = Math.min(list.length - 1, timerIndex + 1);
+            runTimerCycle();
+            break;
+          case "i":
+            e.preventDefault();
+            mark(timerIndex, "incorrect");
+            timerIndex = Math.min(list.length - 1, timerIndex + 1);
+            runTimerCycle();
+            break;
+        }
+      });
+
+      // Right-click disables context menu when timer running
+      document.addEventListener("contextmenu", (e) => {
+        if (timerRunning) e.preventDefault();
+      });
+
+      // Mouse controls for timer
+      document.addEventListener("mousedown", (e) => {
+        if (!timerRunning) return;
+        e.preventDefault();
+        const list = randomizedList.length
+          ? randomizedList
+          : prepareWordPairs();
+
+        if (e.button === 0 && timerIndex < list.length) {
+          // Left-click plays audio again
+          playAudio(list[timerIndex].word);
+        } else if (e.button === 2) {
+          // Right-click advances next word
+          timerIndex++;
+          runTimerCycle();
+        }
+      });
+
+      // Load words and start
+      loadWordsFromFiles();
+    </script>
+  </body>
+</html>
