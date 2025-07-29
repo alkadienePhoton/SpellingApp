@@ -215,7 +215,7 @@
         definitionCache[word] = [
           {
             partOfSpeech: "",
-            definition: "❌ No definition found.",
+            definition: "No definition found.",
             example: "fail: no source found",
             source: "",
             sourceUrl: "",
@@ -361,7 +361,7 @@
         const originalIndex = displayIndices[displayIndex];
         corrects[originalIndex] = status;
         currentSpot = displayIndex + 1;
-        renderTable();
+        renderTable(true);
       }
 
       function scrollToCurrent() {
@@ -641,6 +641,35 @@
         // Wait for user to mark before advancing
       }
       // Event listeners for keyboard controls
+      document.addEventListener("keydown", async (e) => {
+        if (e.key.toLowerCase() === "d") {
+          e.preventDefault();
+
+          const list = randomizedList.length
+            ? randomizedList
+            : prepareWordPairs();
+          const currentWordObj = list[timerIndex] || list[currentSpot];
+          if (!currentWordObj) return;
+
+          const word = currentWordObj.word;
+
+          try {
+            // Check cache first
+            let defs = definitionCache[word];
+            if (!defs) {
+              defs = await getDefinition(word);
+            }
+
+            if (defs && defs.length > 0) {
+              const defText = defs[0].definition.replace(/\[word\]/gi, word);
+              await playAudio(defText, "en-US");
+            }
+          } catch (err) {
+            console.warn("Failed to play definition audio:", err);
+          }
+        }
+      });
+
       document.addEventListener("keydown", (e) => {
         if (timerRunning) return; // Already handled in timer mode above
 
@@ -654,7 +683,6 @@
             const { index: originalIndex } = list[currentSpot];
             mark(currentSpot, "correct");
             if (currentSpot < list.length - 1) {
-              currentSpot++;
               renderTable();
             }
             break;
@@ -663,7 +691,6 @@
             const { index: originalIndex } = list[currentSpot];
             mark(currentSpot, "incorrect");
             if (currentSpot < list.length - 1) {
-              currentSpot++;
               renderTable();
             }
             break;
@@ -704,18 +731,6 @@
           case "Q":
             e.preventDefault();
             stopTimer();
-            break;
-          case "u":
-            e.preventDefault();
-            mark(timerIndex, "correct");
-            timerIndex = Math.min(list.length - 1, timerIndex + 1);
-            runTimerCycle();
-            break;
-          case "i":
-            e.preventDefault();
-            mark(timerIndex, "incorrect");
-            timerIndex = Math.min(list.length - 1, timerIndex + 1);
-            runTimerCycle();
             break;
         }
       });
